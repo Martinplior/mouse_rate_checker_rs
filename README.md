@@ -1,1 +1,3 @@
-# mouse_rate_checker_rs
+# MouseRateCheckerRS
+
+MouseRateChecker that written in Rust...
