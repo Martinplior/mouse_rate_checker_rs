@@ -4,7 +4,6 @@ pub mod global_listener_app;
 pub mod main_app;
 
 mod interprocess_channel;
-mod msg_hook;
 
 fn get_current_dir() -> std::path::PathBuf {
     std::env::current_dir().unwrap()
