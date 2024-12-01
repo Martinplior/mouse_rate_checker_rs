@@ -1,12 +1,19 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![deny(unsafe_op_in_unsafe_fn)]
 
-use app::MainApp;
+pub mod global_listener_app;
+pub mod main_app;
 
-mod app;
+mod interprocess_channel;
 mod msg_hook;
 
-fn main() {
-    let _ = std::panic::catch_unwind(|| MainApp::new().run()).map_err(|err| {
+fn get_current_dir() -> std::path::PathBuf {
+    std::env::current_dir().unwrap()
+}
+
+pub fn graceful_run<R>(
+    f: impl FnOnce() -> R + std::panic::UnwindSafe,
+) -> Result<R, Box<dyn std::any::Any + Send>> {
+    std::panic::catch_unwind(f).map_err(|err| {
         let message = if let Some(err) = err.downcast_ref::<String>() {
             err.clone()
         } else {
@@ -20,5 +27,5 @@ fn main() {
             .set_description(message)
             .show();
         err
-    });
+    })
 }

@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    os::windows::io::IntoRawHandle,
     time::{Duration, Instant},
 };
 
@@ -8,15 +9,20 @@ use eframe::{
     wgpu::{Backends, PowerPreference, PresentMode},
 };
 use egui::{ViewportBuilder, Widget};
-use winit::platform::windows::EventLoopBuilderExtWindows;
 
-use crate::msg_hook::create_msg_hook;
+use crate::{
+    global_listener_app::{self, InstantWrap},
+    interprocess_channel,
+};
 
-use crossbeam::channel::Receiver as MpscReceiver;
+use interprocess_channel::NonBlockReceiver as MpscReceiver;
 
 pub struct MainApp;
 
 impl MainApp {
+    /// large enough to avoid jam
+    pub const BUF_CAP: usize = u16::MAX as usize + 1;
+
     const EDGE: f32 = 600.0;
 
     const SIDE_WIDTH: f32 = 200.0;
@@ -26,21 +32,22 @@ impl MainApp {
     }
 
     pub fn run(self) {
-        // large enough to avoid jam
-        const CAP: usize = u16::MAX as usize + 1;
-        let (msg_sender, msg_receiver) = crossbeam::channel::bounded(CAP);
+        let cap = Self::BUF_CAP;
+        let (msg_sender, msg_receiver) = interprocess_channel::bounded(cap).unwrap();
+        let msg_receiver = MpscReceiver::bounded(msg_receiver, cap);
+
+        let msg_sender_handle: std::os::windows::io::OwnedHandle = msg_sender.into();
+        let msg_sender_raw_handle = msg_sender_handle.into_raw_handle() as usize;
+
+        let path = crate::get_current_dir().join("global_listener_app");
+
+        let mut global_listener = std::process::Command::new(path)
+            .arg(global_listener_app::MainApp::UNIQUE_IDENT)
+            .arg(msg_sender_raw_handle.to_string())
+            .spawn()
+            .unwrap();
+
         let edge = Self::EDGE;
-        // let icon_data = {
-        //     let img = image::load_from_memory(include_bytes!("../../icons/kps_icon.png")).unwrap();
-        //     let width = img.width();
-        //     let height = img.height();
-        //     let data = img.into_bytes();
-        //     egui::IconData {
-        //         rgba: data,
-        //         width,
-        //         height,
-        //     }
-        // };
         let native_options = eframe::NativeOptions {
             viewport: ViewportBuilder::default()
                 .with_inner_size([edge + Self::SIDE_WIDTH, edge])
@@ -54,9 +61,6 @@ impl MainApp {
                 power_preference: PowerPreference::HighPerformance,
                 ..Default::default()
             },
-            event_loop_builder: Some(Box::new(|event_loop_builder| {
-                event_loop_builder.with_msg_hook(create_msg_hook(msg_sender));
-            })),
             ..Default::default()
         };
         eframe::run_native(
@@ -65,38 +69,47 @@ impl MainApp {
             Box::new(|cc| Ok(Box::new(App::new(cc, msg_receiver)))),
         )
         .unwrap();
+
+        let _ = global_listener.kill();
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GotoBottomState {
+    None,
+    Discard,
+    Scroll,
+}
+
 struct App {
-    msg_receiver: MpscReceiver<Instant>,
+    msg_receiver: MpscReceiver<InstantWrap>,
+    msg_buf: Vec<Instant>,
     instant_queue: VecDeque<Instant>,
+    last_reported_instant: Instant,
 
     last_pointer_pos: Option<egui::Pos2>,
     scroll_offset: f32,
-    need_goto_bottom: bool,
+    need_goto_bottom: GotoBottomState,
 
     show_state: bool,
-    text_label_buf: Vec<u32>,
-    avg10_buf: VecDeque<u32>,
-    avg10_sum: u32,
+    text_label_buf: Vec<f32>,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, msg_receiver: MpscReceiver<Instant>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, msg_receiver: MpscReceiver<InstantWrap>) -> Self {
         cc.egui_ctx.set_theme(egui::Theme::Dark);
         let capacity = 1024 * 64;
         let text_label_buf_capacity = 1024 * 1024;
         Self {
             msg_receiver,
+            msg_buf: Vec::with_capacity(capacity),
             instant_queue: VecDeque::with_capacity(capacity),
+            last_reported_instant: Instant::now(),
             last_pointer_pos: None,
             scroll_offset: 0.0,
-            need_goto_bottom: false,
+            need_goto_bottom: GotoBottomState::None,
             show_state: true,
             text_label_buf: Vec::with_capacity(text_label_buf_capacity),
-            avg10_buf: (0..10).map(|_| 0).collect(),
-            avg10_sum: 0,
         }
     }
 }
@@ -109,9 +122,16 @@ impl App {
             let mut scroll_area = egui::ScrollArea::vertical()
                 .stick_to_bottom(true)
                 .auto_shrink(false);
-            let need_goto_bottom = std::mem::take(&mut self.need_goto_bottom);
-            if need_goto_bottom {
-                scroll_area = scroll_area.vertical_scroll_offset(self.scroll_offset);
+            match self.need_goto_bottom {
+                GotoBottomState::Discard => {
+                    ui.ctx().request_discard("need scroll offset");
+                    self.need_goto_bottom = GotoBottomState::Scroll;
+                }
+                GotoBottomState::Scroll => {
+                    scroll_area = scroll_area.vertical_scroll_offset(self.scroll_offset);
+                    self.need_goto_bottom = GotoBottomState::None
+                }
+                _ => (),
             }
             let text_height = ui.text_style_height(&egui::TextStyle::Body);
             let r =
@@ -121,27 +141,28 @@ impl App {
                             .get(range)
                             .unwrap()
                             .iter()
-                            .for_each(|hz| {
-                                ui.label(format!("{} hz", hz));
+                            .for_each(|&value| {
+                                let text = if value >= 1000.0 {
+                                    ">= 1s".to_string()
+                                } else {
+                                    format!("{:.3}ms", value)
+                                };
+                                ui.label(text);
                             });
                     });
                 });
-            self.scroll_offset = r.content_size.y - r.inner_rect.height() + text_height;
+            self.scroll_offset = r.content_size.y - r.inner_rect.height();
         });
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let instant_now = std::time::Instant::now();
-        self.instant_queue.extend(self.msg_receiver.try_iter());
-        let dead_line = instant_now - Duration::from_secs(1);
-        let count = self
-            .instant_queue
-            .iter()
-            .take_while(|&instant| *instant < dead_line)
-            .count();
-        self.instant_queue.drain(..count);
+        let instant_now = Instant::now();
+
+        self.msg_buf.clear();
+        self.msg_buf
+            .extend(self.msg_receiver.try_iter().map(Into::<Instant>::into));
 
         egui::SidePanel::right("right panel")
             .exact_width(MainApp::SIDE_WIDTH)
@@ -170,7 +191,7 @@ impl eframe::App for App {
                                 .inner_margin(egui::Margin::same(5.0))
                                 .show(ui, |ui| {
                                     ui.set_width(60.0);
-                                    egui::Label::new(format!("{} hz", self.avg10_sum / 10)).ui(ui);
+                                    ui.label(format!("{} hz", self.instant_queue.len()));
                                 });
                         });
                     });
@@ -199,19 +220,28 @@ impl eframe::App for App {
             }
             self.last_pointer_pos = current_pos;
 
-            let new_hz = self.instant_queue.len() as u32;
-            let old_hz = self.avg10_buf.pop_front().unwrap();
-            self.avg10_buf.push_back(new_hz);
-            self.avg10_sum = self.avg10_sum.wrapping_add(new_hz).wrapping_sub(old_hz);
+            self.instant_queue.extend(self.msg_buf.iter());
+            let dead_line = instant_now - Duration::from_secs(1);
+            let count = self
+                .instant_queue
+                .iter()
+                .take_while(|&instant| *instant < dead_line)
+                .count();
+            self.instant_queue.drain(..count);
 
             if !self.show_state {
                 return;
             }
 
-            self.text_label_buf.push(new_hz);
-            self.need_goto_bottom = true;
+            self.msg_buf.iter().for_each(|&instant| {
+                let duration = instant - self.last_reported_instant;
+                self.text_label_buf.push(duration.as_secs_f32() * 1000.0);
+                self.last_reported_instant = instant;
+            });
 
-            ctx.request_repaint();
+            if self.need_goto_bottom == GotoBottomState::None {
+                self.need_goto_bottom = GotoBottomState::Discard;
+            }
         });
     }
 }

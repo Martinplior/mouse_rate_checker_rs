@@ -1,10 +1,7 @@
 use std::{mem::MaybeUninit, time::Instant};
 
 use windows::Win32::UI::{
-    Input::{
-        GetRawInputData, HRAWINPUT, MOUSE_MOVE_ABSOLUTE, MOUSE_MOVE_RELATIVE, RAWINPUT,
-        RAWINPUTHEADER, RID_INPUT, RIM_TYPEMOUSE,
-    },
+    Input::{GetRawInputData, HRAWINPUT, RAWINPUT, RAWINPUTHEADER, RID_INPUT, RIM_TYPEMOUSE},
     WindowsAndMessaging::{MSG, WM_INPUT},
 };
 
@@ -15,11 +12,13 @@ pub fn create_msg_hook(
 ) -> impl FnMut(*const std::ffi::c_void) -> bool {
     move |msg| {
         let msg = unsafe { &*(msg as *const MSG) };
-        if msg.message == WM_INPUT {
-            handle_raw_input(msg, &msg_sender);
-            return true;
+        match msg.message {
+            WM_INPUT => {
+                handle_raw_input(msg, &msg_sender);
+                true
+            }
+            _ => false,
         }
-        false
     }
 }
 
@@ -45,10 +44,6 @@ fn handle_raw_input(msg: &MSG, msg_sender: &MpscSender<Instant>) {
         unsafe { raw_input.assume_init() }
     };
     if raw_input.header.dwType != RIM_TYPEMOUSE.0 {
-        return;
-    }
-    let mouse = unsafe { raw_input.data.mouse };
-    if mouse.usFlags != MOUSE_MOVE_RELATIVE && (mouse.usFlags.0 & MOUSE_MOVE_ABSOLUTE.0) != 1 {
         return;
     }
     let instant_now = Instant::now();
