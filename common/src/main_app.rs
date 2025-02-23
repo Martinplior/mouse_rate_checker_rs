@@ -3,17 +3,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eframe::{
-    egui_wgpu::WgpuConfiguration,
-    wgpu::{Backends, PowerPreference, PresentMode},
-};
+use eframe::{egui_wgpu::WgpuConfiguration, wgpu::PresentMode};
 use egui::{ViewportBuilder, Widget};
-use windows::Win32::UI::WindowsAndMessaging::{MSG, WM_INPUT};
+use windows::Win32::UI::WindowsAndMessaging::WM_INPUT;
 
 use crossbeam::channel::Receiver as MpscReceiver;
 use crossbeam::channel::Sender as MpscSender;
 
-use crate::{global_listener::GlobalListener, win_utils};
+use crate::{
+    global_listener::{GlobalListener, WinMsg},
+    win_utils,
+};
 
 pub struct MainApp;
 
@@ -39,9 +39,7 @@ impl MainApp {
                 .with_minimize_button(false),
             renderer: eframe::Renderer::Wgpu,
             wgpu_options: WgpuConfiguration {
-                supported_backends: Backends::VULKAN,
                 present_mode: PresentMode::AutoVsync,
-                power_preference: PowerPreference::HighPerformance,
                 ..Default::default()
             },
             ..Default::default()
@@ -108,9 +106,9 @@ impl App {
         }
     }
 
-    fn create_msg_hook(msg_sender: MpscSender<Instant>) -> impl FnMut(&MSG) -> bool {
+    fn create_msg_hook(msg_sender: MpscSender<Instant>) -> impl FnMut(&WinMsg) -> bool {
         move |msg| {
-            if msg.message == WM_INPUT {
+            if msg.msg.message == WM_INPUT {
                 Self::handle_raw_input(msg, &msg_sender);
                 return true;
             }
@@ -118,12 +116,12 @@ impl App {
         }
     }
 
-    fn handle_raw_input(msg: &MSG, msg_sender: &MpscSender<Instant>) {
-        let raw_input = win_utils::RawInput::from_msg(msg);
+    fn handle_raw_input(msg: &WinMsg, msg_sender: &MpscSender<Instant>) {
+        let raw_input = win_utils::RawInput::from_msg(&msg.msg);
         if !matches!(raw_input, win_utils::RawInput::Mouse(_)) {
             unreachable!("unexpected raw input");
         }
-        msg_sender.send(Instant::now()).unwrap();
+        msg_sender.send(msg.instant).unwrap();
     }
 }
 
@@ -160,7 +158,7 @@ impl App {
                                 } else {
                                     format!("{:.3}ms", value)
                                 };
-                                ui.label(text);
+                                egui::Label::new(text).selectable(true).ui(ui);
                             });
                     });
                 });
@@ -198,7 +196,7 @@ impl eframe::App for App {
                     .ui(ui);
                     egui::Frame::default()
                         .stroke(ui.visuals().noninteractive().bg_stroke)
-                        .inner_margin(egui::Margin::same(5.0))
+                        .inner_margin(egui::Margin::same(5))
                         .show(ui, |ui| {
                             self.show_text_labels(ui);
                         });
@@ -210,7 +208,7 @@ impl eframe::App for App {
                                 .ui(ui);
                             egui::Frame::default()
                                 .stroke(ui.visuals().noninteractive().bg_stroke)
-                                .inner_margin(egui::Margin::same(5.0))
+                                .inner_margin(egui::Margin::same(5))
                                 .show(ui, |ui| {
                                     ui.set_width(60.0);
                                     ui.label(format!("{} hz", self.instant_queue.len()));
