@@ -2,8 +2,8 @@
 
 pub mod main_app;
 
-mod global_listener;
-mod win_utils;
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 pub fn graceful_run<R>(
     f: impl FnOnce() -> R + std::panic::UnwindSafe,
@@ -16,8 +16,6 @@ pub fn graceful_run<R>(
         } else {
             format!("{:?}, type_id = {:?}", err, err.type_id())
         };
-        #[cfg(debug_assertions)]
-        dbg!(&message);
         rfd::MessageDialog::new()
             .set_title("错误")
             .set_level(rfd::MessageLevel::Error)

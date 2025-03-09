@@ -7,17 +7,15 @@ members = [
 
 [workspace.dependencies]
 common = { path = "./common" }
-eframe = { version = "0.31.0", default-features = false, features = ["wgpu"] }
-egui = "0.31.0"
+
+sak_rs = { git = "https://github.com/Martinplior/sak_rs", tag = "v0.0.1", default-features = false, features = ["os_windows_input"] }
+
+eframe = { version = "0.31.1", default-features = false, features = ["wgpu"] }
+egui = "0.31.1"
 winit = { version = "0.30.9", default-features = false }
 crossbeam = { version = "0.8.4", default-features = false, features = ["std"] }
 rfd = "0.15.2"
 windows = { version = "0.60.0", features = [
-    "Win32_Graphics_Gdi",
     "Win32_Foundation",
-    "Win32_UI_Input_KeyboardAndMouse",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_System_LibraryLoader",
-    "Win32_System_Threading",
-    "Win32_Devices_HumanInterfaceDevice",
 ] }
+mimalloc = { version = "0.1.43", default-features = false }

@@ -5,15 +5,11 @@ use std::{
 
 use eframe::{egui_wgpu::WgpuConfiguration, wgpu::PresentMode};
 use egui::{ViewportBuilder, Widget};
+use sak_rs::os::windows::input::{GlobalListener, global_listener::WinMsg, raw_input};
 use windows::Win32::UI::WindowsAndMessaging::WM_INPUT;
 
 use crossbeam::channel::Receiver as MpscReceiver;
 use crossbeam::channel::Sender as MpscSender;
-
-use crate::{
-    global_listener::{GlobalListener, WinMsg},
-    win_utils,
-};
 
 pub struct MainApp;
 
@@ -81,14 +77,11 @@ impl App {
         let channel_cap = u16::MAX as usize + 1;
         let (msg_sender, msg_receiver) = crossbeam::channel::bounded(channel_cap);
         let global_listener = GlobalListener::new(Self::create_msg_hook(msg_sender), |&hwnd| {
-            use win_utils::raw_input_device;
-            raw_input_device::register(
-                raw_input_device::DeviceType::Keyboard,
-                raw_input_device::OptionType::Remove,
-            );
-            raw_input_device::register(
-                raw_input_device::DeviceType::Mouse,
-                raw_input_device::OptionType::Flags(hwnd, Default::default()),
+            use sak_rs::os::windows::input::raw_input::device;
+            device::register(device::DeviceType::Keyboard, device::OptionType::Remove);
+            device::register(
+                device::DeviceType::Mouse,
+                device::OptionType::Flags(hwnd, Default::default()),
             );
         });
         let capacity = 1024 * 64;
@@ -117,8 +110,8 @@ impl App {
     }
 
     fn handle_raw_input(msg: &WinMsg, msg_sender: &MpscSender<Instant>) {
-        let raw_input = win_utils::RawInput::from_msg(&msg.msg);
-        if !matches!(raw_input, win_utils::RawInput::Mouse(_)) {
+        let raw_input = raw_input::RawInput::from_msg(&msg.msg);
+        if !matches!(raw_input, raw_input::RawInput::Mouse(_)) {
             unreachable!("unexpected raw input");
         }
         msg_sender.send(msg.instant).unwrap();
